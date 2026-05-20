@@ -37,7 +37,8 @@ __screenshots__/
 
 # Firebase
 serviceAccountKey.json
-
+data.json
+semester6.json
 # Environment variables
 .env
 .env.local
