@@ -44,6 +44,7 @@ const isDarkTheme = ref(true)
 // Notification state
 const isNotificationOpen = ref(false)
 const isPinnedOpen = ref(false)
+const isMenuOpen = ref(false)
 
 // Alert state
 const alertMessage = ref('')
@@ -415,6 +416,15 @@ onMounted(() => {
       isDeleteModalOpen.value = false
       isNotificationOpen.value = false
       isPinnedOpen.value = false
+      isMenuOpen.value = false
+    }
+  })
+
+  // Close menu when clicking outside
+  document.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('.dropdown-menu-container')) {
+      isMenuOpen.value = false
     }
   })
 })
@@ -454,64 +464,55 @@ onMounted(() => {
             getUpcomingTasks().length
           }}</span>
         </button>
-        <button
-          class="theme-toggle pinned-btn"
-          @click="isPinnedOpen = !isPinnedOpen"
-          :title="`${getPinnedTasks().length} task yang harus dikerjakan`"
-        >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            stroke="currentColor"
-            stroke-width="1.5"
+        <div class="dropdown-menu-container">
+          <button
+            class="theme-toggle menu-btn"
+            @click.stop="isMenuOpen = !isMenuOpen"
+            title="Menu"
+            :class="{ active: isMenuOpen }"
           >
-            <!-- Bookmark icon -->
-            <path d="M5 2c-1.1 0-2 .9-2 2v18l9-5 9 5V4c0-1.1-.9-2-2-2H5z" />
-          </svg>
-          <span v-if="getPinnedTasks().length > 0" class="pinned-badge">{{
-            getPinnedTasks().length
-          }}</span>
-        </button>
-        <button
-          class="theme-toggle"
-          @click="toggleTheme"
-          :title="isDarkTheme ? 'Switch to Light Mode' : 'Switch to Dark Mode'"
-        >
-          <svg v-if="isDarkTheme" width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <!-- Sun icon -->
-            <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2" />
-            <path
-              d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
-          </svg>
-          <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <!-- Moon icon -->
-            <path
-              d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-        <button class="theme-toggle" @click="fetchCourses" title="Refresh Data">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <!-- Refresh icon -->
-            <path
-              d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <!-- Three vertical dots icon -->
+              <path d="M12 5h.01M12 12h.01M12 19h.01" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+            <span v-if="getPinnedTasks().length > 0" class="menu-alert-dot"></span>
+          </button>
+          
+          <div v-if="isMenuOpen" class="menu-dropdown-list">
+            <!-- Bookmark Item -->
+            <button class="menu-item" @click="isPinnedOpen = !isPinnedOpen; isMenuOpen = false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1">
+                <!-- Bookmark icon -->
+                <path d="M5 2c-1.1 0-2 .9-2 2v18l9-5 9 5V4c0-1.1-.9-2-2-2H5z" />
+              </svg>
+              <span>Bookmark Task</span>
+              <span v-if="getPinnedTasks().length > 0" class="menu-badge">{{ getPinnedTasks().length }}</span>
+            </button>
+
+            <!-- Dark Mode Toggle Item -->
+            <button class="menu-item" @click="toggleTheme(); isMenuOpen = false">
+              <svg v-if="isDarkTheme" width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <!-- Sun icon -->
+                <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <!-- Moon icon -->
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>{{ isDarkTheme ? 'Mode Terang' : 'Mode Gelap' }}</span>
+            </button>
+
+            <!-- Refresh Data Item -->
+            <button class="menu-item" @click="fetchCourses(); isMenuOpen = false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <!-- Refresh icon -->
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>Refresh Data</span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -1129,24 +1130,88 @@ body {
   font-weight: 700;
   border: 2px solid var(--card);
 }
-.pinned-btn {
+.dropdown-menu-container {
+  position: relative;
+  display: inline-block;
+}
+.menu-btn {
   position: relative;
 }
-.pinned-badge {
+.menu-btn.active {
+  background: var(--hover-bg);
+  border-color: var(--primary);
+}
+.menu-alert-dot {
   position: absolute;
-  top: -8px;
-  right: -8px;
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
-  color: #ffffff;
-  width: 24px;
-  height: 24px;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  background: #3b82f6;
   border-radius: 50%;
+  border: 2px solid var(--card);
+}
+.menu-dropdown-list {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  width: 200px;
+  padding: 0.5rem;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  animation: menuFadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes menuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.menu-item {
+  width: 100%;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 150ms ease;
+  text-align: left;
+}
+.menu-item:hover {
+  background: var(--hover-bg);
+  color: var(--primary);
+}
+.menu-item svg {
+  color: var(--muted);
+  transition: color 150ms ease;
+}
+.menu-item:hover svg {
+  color: var(--primary);
+}
+.menu-badge {
+  margin-left: auto;
+  background: #3b82f6;
+  color: #ffffff;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
   font-weight: 700;
-  border: 2px solid var(--card);
 }
 .main {
   display: flex;
@@ -1246,6 +1311,9 @@ select {
 .actions {
   display: flex;
   gap: 0.5rem;
+}
+.add-panel .actions .btn {
+  flex: 1;
 }
 .btn {
   padding: 0.55rem 0.9rem;
@@ -1908,18 +1976,33 @@ select {
     order: -1;
   }
 
-  /* Adjust topbar for smaller screens */
+  /* Sleek horizontal row layout for mobile topbar */
   .topbar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1rem;
-    padding: 1rem;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    width: 100%;
   }
 
-  /* Spread header actions */
+  .brand {
+    gap: 0.5rem;
+  }
+
+  .brand h1 {
+    font-size: 1.2rem;
+  }
+
+  .logo {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Keep header actions next to each other on the right */
   .header-actions {
-    width: 100%;
-    justify-content: space-between;
+    width: auto;
+    justify-content: flex-end;
   }
 
   /* Increase padding for touch targets */
