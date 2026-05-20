@@ -432,7 +432,6 @@ onMounted(() => {
         </svg>
         <div>
           <h1>UT Todo</h1>
-          <p class="muted">Kelola tugas & diskusi mata kuliah dengan mudah</p>
         </div>
       </div>
       <div class="header-actions">
@@ -535,8 +534,8 @@ onMounted(() => {
           </div>
         </div>
         <div class="field actions">
-          <button class="btn btn-success" @click="addCourse">Simpan</button>
           <button class="btn btn-secondary" @click="name = ''">Reset</button>
+          <button class="btn btn-success" @click="addCourse">Simpan</button>
         </div>
       </aside>
 
@@ -1891,5 +1890,71 @@ select {
   color: var(--muted);
   font-style: italic;
   font-size: 0.8rem;
+}
+
+/* =========================================
+   Mobile Responsiveness & Friendly UI
+   ========================================= */
+@media (max-width: 768px) {
+  /* Stack layout vertically on small screens */
+  .main {
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  /* Make add panel take full width and appear on top */
+  .add-panel {
+    width: 100%;
+    order: -1;
+  }
+
+  /* Adjust topbar for smaller screens */
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  /* Spread header actions */
+  .header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  /* Increase padding for touch targets */
+  .btn, .icon, .theme-toggle {
+    min-height: 44px; /* Apple Human Interface Guidelines minimum touch target */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .btn.primary {
+    padding: 0.85rem 1.25rem;
+  }
+
+  /* Adjust modals and overlays to center correctly on mobile */
+  .pinned-overlay, .notification-overlay, .modal-container {
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+
+  .pinned-panel, .notification-panel, .modal-content {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    max-height: 85vh;
+  }
+  
+  /* Slightly larger fonts for readability on mobile */
+  h1 {
+    font-size: 1.75rem;
+  }
+  
+  h3 {
+    font-size: 1.3rem;
+  }
 }
 </style>
