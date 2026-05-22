@@ -218,9 +218,9 @@ function saveTodo() {
     return
   }
 
-  // Validate completed date if provided and todo is completed
+  // Validate completed date if provided
   let completedDateValue: string | undefined = undefined
-  if (todoIsCompleted.value && todoCompletedDate.value) {
+  if (todoCompletedDate.value && todoCompletedDate.value.trim()) {
     const parsed = parseAnyDateInput(todoCompletedDate.value)
     if (parsed) {
       const parts = parsed.split('/')
@@ -251,9 +251,17 @@ function saveTodo() {
       // Always update nilai (including clearing it if empty)
       todo.nilai = nilaiNum
       
-      // Update completedDate if task is done
-      if (todo.done) {
+      // If completedDateValue is provided, automatically set done = true
+      if (completedDateValue) {
+        todo.done = true
         todo.completedDate = completedDateValue
+      } else {
+        // If completed date is empty:
+        // if it was done, we keep it done but set completedDate to undefined (legacy fallback)
+        // if it was not done, it remains not done
+        if (todo.done) {
+          todo.completedDate = undefined
+        }
       }
       
       updateCourse(currentCourse.value)
@@ -878,11 +886,12 @@ onMounted(() => {
 
             <ul v-if="isExpanded(course.id)" class="todo-list">
               <li v-for="todo in course.todos" :key="todo.id" :class="{ done: todo.done }">
-                <label class="todo-item">
+                <div class="todo-item" @click="openEditTodoModal(course, todo)" style="cursor: pointer">
                   <input
                     type="checkbox"
                     v-model="todo.done"
                     @change="toggleTodo(course)"
+                    @click.stop
                     :disabled="!!todo.nilai"
                   />
                   <div class="todo-content">
@@ -903,7 +912,7 @@ onMounted(() => {
                       </small>
                     </div>
                   </div>
-                </label>
+                </div>
                 <div class="todo-actions">
                   <button
                     class="icon-small icon-edit"
@@ -998,13 +1007,13 @@ onMounted(() => {
             </div>
           </div>
         </div>
-        <div v-if="todoIsCompleted" class="field">
+        <div v-if="editingTodoId" class="field">
           <label>Tanggal Selesai (Completion Date)</label>
           <div class="date-picker-input-group">
             <input
               type="text"
               v-model="todoCompletedDate"
-              placeholder="Kosongkan untuk anggap selesai tepat waktu ('On Time')"
+              placeholder="Mengisi ini otomatis menyelesaikan task (contoh: 22 Mei 2026)"
               class="date-text-input"
               @keyup.enter="saveTodo"
             />
@@ -1023,6 +1032,7 @@ onMounted(() => {
               />
             </div>
           </div>
+          <small class="muted" style="display: block; margin-top: 0.25rem;">*Mengisi tanggal selesai akan menandai task sebagai selesai.</small>
         </div>
         <div class="field">
           <label>Nilai (0-100)</label>
