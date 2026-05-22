@@ -1004,7 +1004,11 @@ body {
   overflow-x: hidden;
 }
 .site {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: linear-gradient(180deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 60%);
   color: var(--text);
 
@@ -1216,6 +1220,9 @@ body {
 .main {
   display: flex;
   gap: 1rem;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .panel {
   background: var(--card);
@@ -1226,9 +1233,14 @@ body {
 }
 .add-panel {
   width: 320px;
+  flex-shrink: 0;
 }
 .list-panel {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 .field {
   margin-bottom: 0.75rem;
@@ -1443,6 +1455,10 @@ select {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 1rem;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
 }
 .add-panel .btn.primary {
   width: 100%;
