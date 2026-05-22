@@ -30,6 +30,8 @@ const todoTitle = ref('')
 const editingTodoId = ref<number | null>(null)
 const todoDueDate = ref('')
 const todoNilai = ref('')
+const todoCompletedDate = ref('')
+const todoIsCompleted = ref(false)
 const isDeleteModalOpen = ref(false)
 const deleteTarget = ref<{
   type: 'course' | 'todo'
@@ -172,10 +174,17 @@ function closeDeleteModal() {
 
 function toggleTodo(course: Course) {
   // v-model already updated the todo.done. Persist the changed course.
-  // Track when todo is completed
-  const changedTodos = course.todos.filter((t) => !t.completedDate && t.done)
-  changedTodos.forEach((todo) => {
-    todo.completedDate = new Date().toISOString().split('T')[0]
+  course.todos.forEach((todo) => {
+    if (todo.done) {
+      if (!todo.completedDate) {
+        // Use timezone-safe local date string: YYYY-MM-DD
+        const now = new Date()
+        todo.completedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      }
+    } else {
+      // Clear completion date if task is unchecked
+      todo.completedDate = undefined
+    }
   })
   updateCourse(course)
 }
@@ -194,6 +203,8 @@ function openEditTodoModal(course: Course, todo: Todo) {
   todoDueDate.value = todo.dueDate ? formatDisplayOnlyDate(todo.dueDate) : ''
   todoNilai.value = todo.nilai ? String(todo.nilai) : ''
   editingTodoId.value = todo.id
+  todoIsCompleted.value = todo.done
+  todoCompletedDate.value = todo.completedDate ? formatDisplayOnlyDate(todo.completedDate) : ''
   isTodoModalOpen.value = true
 }
 
@@ -205,6 +216,19 @@ function saveTodo() {
   if (todoDueDate.value && !parsedDate) {
     showCustomAlert('Format tanggal tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)', 'warning', 'Peringatan')
     return
+  }
+
+  // Validate completed date if provided and todo is completed
+  let completedDateValue: string | undefined = undefined
+  if (todoIsCompleted.value && todoCompletedDate.value) {
+    const parsed = parseAnyDateInput(todoCompletedDate.value)
+    if (parsed) {
+      const parts = parsed.split('/')
+      completedDateValue = `${parts[2]}-${parts[1]}-${parts[0]}`
+    } else {
+      showCustomAlert('Format tanggal selesai tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)', 'warning', 'Peringatan')
+      return
+    }
   }
 
   // Validate nilai if provided
@@ -226,6 +250,12 @@ function saveTodo() {
       todo.dueDate = parsedDate || undefined
       // Always update nilai (including clearing it if empty)
       todo.nilai = nilaiNum
+      
+      // Update completedDate if task is done
+      if (todo.done) {
+        todo.completedDate = completedDateValue
+      }
+      
       updateCourse(currentCourse.value)
     }
   } else {
@@ -255,6 +285,8 @@ function closeTodoModal() {
   todoDueDate.value = ''
   todoNilai.value = ''
   editingTodoId.value = null
+  todoIsCompleted.value = false
+  todoCompletedDate.value = ''
 }
 
 function startEdit(course: Course) {
@@ -310,11 +342,35 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light')
 }
 
+function parseLocalDate(dateStr: string): Date {
+  if (!dateStr) return new Date()
+  const parts = dateStr.trim().split('-')
+  if (parts.length === 3) {
+    const p0 = parts[0]
+    const p1 = parts[1]
+    const p2 = parts[2]
+    if (p0 !== undefined && p1 !== undefined && p2 !== undefined) {
+      const year = parseInt(p0, 10)
+      const month = parseInt(p1, 10) - 1 // 0-based
+      const day = parseInt(p2, 10)
+      if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+        return new Date(year, month, day)
+      }
+    }
+  }
+  return parseDatabaseDate(dateStr)
+}
+
 function getCompletionStatus(todo: Todo): string | null {
   if (!todo.done || !todo.dueDate) return null
 
+  // Legacy task fallback: assume On Time if task is completed but has no completion record
+  if (!todo.completedDate) {
+    return 'On Time'
+  }
+
   const dueDate = parseDatabaseDate(todo.dueDate)
-  const completedDate = todo.completedDate ? new Date(todo.completedDate) : new Date()
+  const completedDate = parseLocalDate(todo.completedDate)
 
   // Reset time to compare dates only
   dueDate.setHours(0, 0, 0, 0)
@@ -485,6 +541,31 @@ function onDatePickerChange(event: Event) {
             'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
           ]
           todoDueDate.value = `${day} ${monthNames[month]} ${year}`
+        }
+      }
+    }
+  }
+}
+
+function onCompletedDatePickerChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target && target.value) {
+    const parts = target.value.split('-')
+    if (parts.length === 3) {
+      const p0 = parts[0]
+      const p1 = parts[1]
+      const p2 = parts[2]
+      if (p0 !== undefined && p1 !== undefined && p2 !== undefined) {
+        const year = parseInt(p0, 10)
+        const month = parseInt(p1, 10) - 1
+        const day = parseInt(p2, 10)
+        
+        if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+          const monthNames = [
+            'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+          ]
+          todoCompletedDate.value = `${day} ${monthNames[month]} ${year}`
         }
       }
     }
@@ -892,7 +973,7 @@ onMounted(() => {
           />
         </div>
         <div class="field">
-          <label>Due Date (Deadline)</label>
+          <label>Deadline (Due Date)</label>
           <div class="date-picker-input-group">
             <input
               type="text"
@@ -913,6 +994,32 @@ onMounted(() => {
                 class="native-date-picker"
                 :value="getDatePickerValue(todoDueDate)"
                 @input="onDatePickerChange"
+              />
+            </div>
+          </div>
+        </div>
+        <div v-if="todoIsCompleted" class="field">
+          <label>Tanggal Selesai (Completion Date)</label>
+          <div class="date-picker-input-group">
+            <input
+              type="text"
+              v-model="todoCompletedDate"
+              placeholder="Kosongkan untuk anggap selesai tepat waktu ('On Time')"
+              class="date-text-input"
+              @keyup.enter="saveTodo"
+            />
+            <div class="date-picker-trigger" title="Pilih Tanggal Selesai">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+              </svg>
+              <input
+                type="date"
+                class="native-date-picker"
+                :value="getDatePickerValue(todoCompletedDate)"
+                @input="onCompletedDatePickerChange"
               />
             </div>
           </div>
