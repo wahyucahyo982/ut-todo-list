@@ -191,7 +191,7 @@ function addCustomTodo(course: Course) {
 function openEditTodoModal(course: Course, todo: Todo) {
   currentCourse.value = course
   todoTitle.value = todo.title
-  todoDueDate.value = todo.dueDate ? formatDate(todo.dueDate) : ''
+  todoDueDate.value = todo.dueDate ? formatDisplayOnlyDate(todo.dueDate) : ''
   todoNilai.value = todo.nilai ? String(todo.nilai) : ''
   editingTodoId.value = todo.id
   isTodoModalOpen.value = true
@@ -200,7 +200,12 @@ function openEditTodoModal(course: Course, todo: Todo) {
 function saveTodo() {
   if (!todoTitle.value.trim() || !currentCourse.value) return
 
-  const parsedDate = todoDueDate.value ? parseDateInput(todoDueDate.value) : ''
+  const parsedDate = todoDueDate.value ? parseAnyDateInput(todoDueDate.value) : ''
+
+  if (todoDueDate.value && !parsedDate) {
+    showCustomAlert('Format tanggal tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)', 'warning', 'Peringatan')
+    return
+  }
 
   // Validate nilai if provided
   let nilaiNum: number | undefined
@@ -308,7 +313,7 @@ function toggleTheme() {
 function getCompletionStatus(todo: Todo): string | null {
   if (!todo.done || !todo.dueDate) return null
 
-  const dueDate = new Date(todo.dueDate)
+  const dueDate = parseDatabaseDate(todo.dueDate)
   const completedDate = todo.completedDate ? new Date(todo.completedDate) : new Date()
 
   // Reset time to compare dates only
@@ -322,22 +327,182 @@ function getCompletionStatus(todo: Todo): string | null {
   }
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  const day = String(date.getDate()).padStart(2, '0')
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const year = String(date.getFullYear()).slice(-2)
-  return `${day}/${month}/${year}`
+function parseDatabaseDate(dateStr: string): Date {
+  if (!dateStr) return new Date()
+  
+  // Try dd/mm/yyyy first
+  const parts = dateStr.trim().split('/')
+  if (parts.length === 3) {
+    const p0 = parts[0]
+    const p1 = parts[1]
+    const p2 = parts[2]
+    if (p0 !== undefined && p1 !== undefined && p2 !== undefined) {
+      const day = parseInt(p0, 10)
+      const month = parseInt(p1, 10) - 1 // 0-based
+      const year = parseInt(p2, 10)
+      if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+        return new Date(year, month, day)
+      }
+    }
+  }
+  
+  // Fallback to native parsing (e.g. YYYY-MM-DD)
+  const d = new Date(dateStr)
+  if (!isNaN(d.getTime())) {
+    return d
+  }
+  return new Date() // fallback
 }
 
-function parseDateInput(input: string): string {
-  // Parse dd/mm/yyyy or dd/mm/yy format to YYYY-MM-DD
-  const parts = input.trim().split('/')
-  if (parts.length === 3 && parts[0] && parts[1] && parts[2]) {
-    const day = parts[0].padStart(2, '0')
-    const month = parts[1].padStart(2, '0')
-    const year = parts[2]!.length === 2 ? `20${parts[2]}` : parts[2]
-    return `${year}-${month}-${day}`
+function formatDisplayOnlyDate(dateStr: string): string {
+  if (!dateStr) return ''
+  const date = parseDatabaseDate(dateStr)
+  if (isNaN(date.getTime())) return dateStr
+  const day = date.getDate()
+  const monthNames = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ]
+  const monthName = monthNames[date.getMonth()]
+  const year = date.getFullYear()
+  return `${day} ${monthName} ${year}`
+}
+
+function formatCardDate(dateStr: string): string {
+  if (!dateStr) return ''
+  const date = parseDatabaseDate(dateStr)
+  if (isNaN(date.getTime())) return dateStr
+  return date.toLocaleDateString('id-ID', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  })
+}
+
+function parseAnyDateInput(input: string): string {
+  if (!input) return ''
+  const cleaned = input.trim().toLowerCase()
+
+  // 1. Check if format is already dd/mm/yyyy or dd/mm/yy
+  const dmyRegex = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/
+  const dmyMatch = cleaned.match(dmyRegex)
+  if (dmyMatch) {
+    const m1 = dmyMatch[1]
+    const m2 = dmyMatch[2]
+    const m3 = dmyMatch[3]
+    if (m1 !== undefined && m2 !== undefined && m3 !== undefined) {
+      const day = parseInt(m1, 10)
+      const month = parseInt(m2, 10)
+      let year = parseInt(m3, 10)
+      if (year < 100) {
+        year += 2000 // handle 2-digit years
+      }
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1000) {
+        return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`
+      }
+    }
+  }
+
+  // 2. Check if format is YYYY-MM-DD (e.g. from standard date picker)
+  const ymdRegex = /^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/
+  const ymdMatch = cleaned.match(ymdRegex)
+  if (ymdMatch) {
+    const m1 = ymdMatch[1]
+    const m2 = ymdMatch[2]
+    const m3 = ymdMatch[3]
+    if (m1 !== undefined && m2 !== undefined && m3 !== undefined) {
+      const year = parseInt(m1, 10)
+      const month = parseInt(m2, 10)
+      const day = parseInt(m3, 10)
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1000) {
+        return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`
+      }
+    }
+  }
+
+  // 3. Check for textual formats like "22 Mei 2026" or "Jum, 22 Mei 2026" or "22 May 2026"
+  // Remove leading day names (e.g., "senin,", "sen,", "mon,", "friday,", "jum,", "sab,", etc.)
+  const cleanText = cleaned.replace(/^[a-z]{3,10}(?:,\s*|\s+)/, '')
+
+  // Split by whitespace
+  const words = cleanText.split(/\s+/)
+  if (words.length >= 3) {
+    const w0 = words[0]
+    const w1 = words[1]
+    const w2 = words[2]
+    if (w0 !== undefined && w1 !== undefined && w2 !== undefined) {
+      const day = parseInt(w0, 10)
+      const monthName = w1
+      const year = parseInt(w2, 10)
+
+      if (!isNaN(day) && !isNaN(year) && day >= 1 && day <= 31 && year >= 1000) {
+        const monthIndex = getMonthIndexFromName(monthName)
+        if (monthIndex !== -1) {
+          return `${String(day).padStart(2, '0')}/${String(monthIndex).padStart(2, '0')}/${year}`
+        }
+      }
+    }
+  }
+
+  return ''
+}
+
+function getMonthIndexFromName(name: string): number {
+  const months: Record<string, number> = {
+    januari: 1, jan: 1,
+    februari: 2, feb: 2,
+    maret: 3, mar: 3,
+    april: 4, apr: 4,
+    mei: 5, may: 5,
+    juni: 6, jun: 6,
+    juli: 7, jul: 7,
+    agustus: 8, agt: 8, agu: 8, aug: 8,
+    september: 9, sep: 9,
+    oktober: 10, okt: 10, oct: 10,
+    november: 11, nov: 11,
+    desember: 12, des: 12, dec: 12
+  }
+  return months[name] || -1
+}
+
+function onDatePickerChange(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target && target.value) {
+    const parts = target.value.split('-')
+    if (parts.length === 3) {
+      const p0 = parts[0]
+      const p1 = parts[1]
+      const p2 = parts[2]
+      if (p0 !== undefined && p1 !== undefined && p2 !== undefined) {
+        const year = parseInt(p0, 10)
+        const month = parseInt(p1, 10) - 1
+        const day = parseInt(p2, 10)
+        
+        if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+          const monthNames = [
+            'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+          ]
+          todoDueDate.value = `${day} ${monthNames[month]} ${year}`
+        }
+      }
+    }
+  }
+}
+
+function getDatePickerValue(input: string): string {
+  if (!input) return ''
+  const dbFormat = parseAnyDateInput(input)
+  if (!dbFormat) return ''
+  const parts = dbFormat.split('/')
+  if (parts.length === 3) {
+    const p0 = parts[0]
+    const p1 = parts[1]
+    const p2 = parts[2]
+    if (p0 !== undefined && p1 !== undefined && p2 !== undefined) {
+      return `${p2}-${p1}-${p0}` // YYYY-MM-DD
+    }
   }
   return ''
 }
@@ -356,7 +521,7 @@ function getUpcomingTasks() {
 
   // Sort by due date (earliest first)
   upcoming.sort(
-    (a, b) => new Date(a.todo.dueDate || '').getTime() - new Date(b.todo.dueDate || '').getTime(),
+    (a, b) => parseDatabaseDate(a.todo.dueDate || '').getTime() - parseDatabaseDate(b.todo.dueDate || '').getTime(),
   )
   return upcoming
 }
@@ -375,7 +540,7 @@ function getPinnedTasks() {
 
   // Sort by due date (earliest first)
   pinned.sort(
-    (a, b) => new Date(a.todo.dueDate || '').getTime() - new Date(b.todo.dueDate || '').getTime(),
+    (a, b) => parseDatabaseDate(a.todo.dueDate || '').getTime() - parseDatabaseDate(b.todo.dueDate || '').getTime(),
   )
   return pinned
 }
@@ -387,7 +552,7 @@ function toggleNotification() {
 function getDaysUntilDue(dueDate: string): number {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  const due = new Date(dueDate)
+  const due = parseDatabaseDate(dueDate)
   due.setHours(0, 0, 0, 0)
   const diffTime = due.getTime() - today.getTime()
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
@@ -653,15 +818,7 @@ onMounted(() => {
                     <span v-if="todo.nilai" class="nilai-badge">Nilai: {{ todo.nilai }}</span>
                     <div class="todo-meta">
                       <small v-if="todo.dueDate" class="due-date">
-                        Due:
-                        {{
-                          new Date(todo.dueDate).toLocaleDateString('id-ID', {
-                            weekday: 'short',
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        }}
+                        Due: {{ formatCardDate(todo.dueDate) }}
                       </small>
                     </div>
                   </div>
@@ -736,12 +893,29 @@ onMounted(() => {
         </div>
         <div class="field">
           <label>Due Date (Deadline)</label>
-          <input
-            type="text"
-            v-model="todoDueDate"
-            placeholder="dd/mm/yyyy"
-            @keyup.enter="saveTodo"
-          />
+          <div class="date-picker-input-group">
+            <input
+              type="text"
+              v-model="todoDueDate"
+              placeholder="Contoh: 22 Mei 2026 atau 22/05/2026"
+              class="date-text-input"
+              @keyup.enter="saveTodo"
+            />
+            <div class="date-picker-trigger" title="Pilih Tanggal">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="6"></line>
+                <line x1="8" y1="2" x2="8" y2="6"></line>
+                <line x1="3" y1="10" x2="21" y2="10"></line>
+              </svg>
+              <input
+                type="date"
+                class="native-date-picker"
+                :value="getDatePickerValue(todoDueDate)"
+                @input="onDatePickerChange"
+              />
+            </div>
+          </div>
         </div>
         <div class="field">
           <label>Nilai (0-100)</label>
@@ -824,7 +998,7 @@ onMounted(() => {
               <span class="days-left"
                 >{{
                   Math.ceil(
-                    (new Date(item.todo.dueDate || '').getTime() - new Date().getTime()) /
+                    (parseDatabaseDate(item.todo.dueDate || '').getTime() - new Date().getTime()) /
                       (1000 * 60 * 60 * 24),
                   )
                 }}
@@ -833,15 +1007,7 @@ onMounted(() => {
             </div>
             <p class="task-title">{{ item.todo.title }}</p>
             <small class="due-date">
-              Deadline:
-              {{
-                new Date(item.todo.dueDate || '').toLocaleDateString('id-ID', {
-                  weekday: 'short',
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })
-              }}
+              Deadline: {{ formatCardDate(item.todo.dueDate || '') }}
             </small>
           </div>
         </div>
@@ -880,7 +1046,7 @@ onMounted(() => {
               <span class="days-left"
                 >{{
                   Math.ceil(
-                    (new Date(item.todo.dueDate || '').getTime() - new Date().getTime()) /
+                    (parseDatabaseDate(item.todo.dueDate || '').getTime() - new Date().getTime()) /
                       (1000 * 60 * 60 * 24),
                   )
                 }}
@@ -889,15 +1055,7 @@ onMounted(() => {
             </div>
             <p class="task-title">{{ item.todo.title }}</p>
             <small class="due-date">
-              Deadline:
-              {{
-                new Date(item.todo.dueDate || '').toLocaleDateString('id-ID', {
-                  weekday: 'short',
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })
-              }}
+              Deadline: {{ formatCardDate(item.todo.dueDate || '') }}
             </small>
           </div>
         </div>
@@ -1260,6 +1418,44 @@ select {
   border: 1px solid var(--border);
   background: var(--input-bg);
   color: var(--text);
+}
+.date-picker-input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.date-picker-input-group .date-text-input {
+  width: 100% !important;
+  padding-right: 2.5rem !important;
+}
+.date-picker-trigger {
+  position: absolute;
+  right: 0.45rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.date-picker-trigger:hover {
+  background: var(--hover-bg);
+  color: var(--primary);
+}
+.native-date-picker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
 }
 /* Inline edit controls inside course card */
 .edit-input {
