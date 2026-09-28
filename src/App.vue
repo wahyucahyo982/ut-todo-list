@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import AlertBox from './components/AlertBox.vue'
 import {
   fetchAllCourses,
@@ -8,6 +8,13 @@ import {
   deleteCourseById,
 } from './courseService'
 import type { Course, Todo } from './courseService'
+import {
+  getCompletedCourses,
+  exportCoursesToJson,
+  parseAndValidateBackupFile,
+  importCoursesToDatabase,
+  getCourseProgress,
+} from './backupService'
 
 // Types are now imported from courseService.ts
 
@@ -22,6 +29,28 @@ const editDraft = ref<{ name: string; type: 'Praktik' | 'Non Praktik' }>({
 })
 const isModalOpen = ref(false)
 const expandedCourseIds = ref<Set<number>>(new Set())
+
+// Backup & Import state
+const isBackupModalOpen = ref(false)
+const backupFileName = ref('')
+const selectedCourseIdsForBackup = ref<number[]>([])
+const completedCoursesForBackup = computed(() => getCompletedCourses(courses.value))
+const completedCoursesCount = computed(() => completedCoursesForBackup.value.length)
+const isAllCoursesSelectedForBackup = computed(() => {
+  return (
+    courses.value.length > 0 && selectedCourseIdsForBackup.value.length === courses.value.length
+  )
+})
+const selectedCoursesForBackup = computed(() => {
+  return courses.value.filter((c) => selectedCourseIdsForBackup.value.includes(c.id))
+})
+
+const importFileInput = ref<HTMLInputElement | null>(null)
+const isImportModalOpen = ref(false)
+const pendingImportCourses = ref<Course[]>([])
+const pendingImportFileName = ref('')
+const importReplaceMode = ref<'merge' | 'replace'>('merge')
+const isImporting = ref(false)
 
 // State for add/edit todo modal
 const isTodoModalOpen = ref(false)
@@ -38,7 +67,40 @@ const deleteTarget = ref<{
   courseId?: number
   todoId?: number
   course?: Course
+  todo?: Todo
 } | null>(null)
+
+function hasCompletedTasks(course: Course): boolean {
+  return course.todos && course.todos.some((todo) => todo.done)
+}
+
+const deleteConfirmMessage = computed(() => {
+  if (!deleteTarget.value) return ''
+  if (deleteTarget.value.type === 'course' && deleteTarget.value.course) {
+    const course = deleteTarget.value.course
+    if (hasCompletedTasks(course)) {
+      return `Mata kuliah "${course.name}" memiliki task yang sudah diproses. Apakah Anda yakin ingin menghapus mata kuliah ini beserta seluruh task di dalamnya?`
+    }
+    if (course.todos && course.todos.length > 0) {
+      return `Apakah Anda yakin ingin menghapus mata kuliah "${course.name}" beserta seluruh task di dalamnya?`
+    }
+    return `Apakah Anda yakin ingin menghapus mata kuliah "${course.name}"?`
+  }
+
+  if (deleteTarget.value.type === 'todo') {
+    const todo = deleteTarget.value.todo
+    const title = todo ? todo.title : 'ini'
+    if (todo && typeof todo.nilai === 'number') {
+      return `Task "${title}" sudah memiliki nilai (${todo.nilai}) dan sudah diproses. Apakah Anda yakin ingin menghapus task ini?`
+    }
+    if (todo && todo.done) {
+      return `Task "${title}" sudah selesai diproses. Apakah Anda yakin ingin menghapus task ini?`
+    }
+    return `Apakah Anda yakin ingin menghapus task "${title}"?`
+  }
+
+  return 'Apakah Anda yakin ingin menghapus data ini?'
+})
 
 // Theme state
 const isDarkTheme = ref(true)
@@ -135,33 +197,32 @@ async function confirmDelete() {
   if (!deleteTarget.value) return
 
   if (deleteTarget.value.type === 'course' && deleteTarget.value.courseId) {
-    // Check if course has completed tasks
-    if (deleteTarget.value.course && hasCompletedTasks(deleteTarget.value.course)) {
-      showCustomAlert(
-        'Mata kuliah tidak bisa dihapus karena memiliki task yang sudah diproses',
-        'warning',
-        'Peringatan',
-      )
-      closeDeleteModal()
-      return
-    }
-
+    const courseId = deleteTarget.value.courseId
+    const courseName = deleteTarget.value.course?.name || ''
     try {
-      await deleteCourseById(deleteTarget.value.courseId)
-      courses.value = courses.value.filter((c) => c.id !== deleteTarget.value!.courseId)
+      await deleteCourseById(courseId)
+      courses.value = courses.value.filter((c) => c.id !== courseId)
+      showCustomAlert(`Mata kuliah "${courseName}" berhasil dihapus.`, 'success', 'Berhasil')
     } catch (e) {
       console.error(e)
-      showCustomAlert('Gagal menghapus', 'error', 'Error')
+      showCustomAlert('Gagal menghapus mata kuliah', 'error', 'Error')
     }
   } else if (
     deleteTarget.value.type === 'todo' &&
     deleteTarget.value.course &&
     deleteTarget.value.todoId
   ) {
+    const todoTitle = deleteTarget.value.todo?.title || 'Task'
     deleteTarget.value.course.todos = deleteTarget.value.course.todos.filter(
       (t) => t.id !== deleteTarget.value!.todoId,
     )
-    await updateCourse(deleteTarget.value.course)
+    try {
+      await updateCourse(deleteTarget.value.course)
+      showCustomAlert(`Task "${todoTitle}" berhasil dihapus.`, 'success', 'Berhasil')
+    } catch (e) {
+      console.error(e)
+      showCustomAlert('Gagal menghapus task', 'error', 'Error')
+    }
   }
 
   closeDeleteModal()
@@ -214,7 +275,11 @@ function saveTodo() {
   const parsedDate = todoDueDate.value ? parseAnyDateInput(todoDueDate.value) : ''
 
   if (todoDueDate.value && !parsedDate) {
-    showCustomAlert('Format tanggal tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)', 'warning', 'Peringatan')
+    showCustomAlert(
+      'Format tanggal tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)',
+      'warning',
+      'Peringatan',
+    )
     return
   }
 
@@ -226,7 +291,11 @@ function saveTodo() {
       const parts = parsed.split('/')
       completedDateValue = `${parts[2]}-${parts[1]}-${parts[0]}`
     } else {
-      showCustomAlert('Format tanggal selesai tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)', 'warning', 'Peringatan')
+      showCustomAlert(
+        'Format tanggal selesai tidak valid. Gunakan format dd/mm/yyyy atau dd mmm yyyy (contoh: 22 Mei 2026)',
+        'warning',
+        'Peringatan',
+      )
       return
     }
   }
@@ -250,7 +319,7 @@ function saveTodo() {
       todo.dueDate = parsedDate || undefined
       // Always update nilai (including clearing it if empty)
       todo.nilai = nilaiNum
-      
+
       // If completedDateValue is provided, automatically set done = true
       if (completedDateValue) {
         todo.done = true
@@ -263,7 +332,7 @@ function saveTodo() {
           todo.completedDate = undefined
         }
       }
-      
+
       updateCourse(currentCourse.value)
     }
   } else {
@@ -282,7 +351,8 @@ function saveTodo() {
 }
 
 function deleteTodo(course: Course, todoId: number) {
-  deleteTarget.value = { type: 'todo', course, todoId }
+  const todo = course.todos.find((t) => t.id === todoId)
+  deleteTarget.value = { type: 'todo', course, todoId, todo }
   isDeleteModalOpen.value = true
 }
 
@@ -393,7 +463,7 @@ function getCompletionStatus(todo: Todo): string | null {
 
 function parseDatabaseDate(dateStr: string): Date {
   if (!dateStr) return new Date()
-  
+
   // Try dd/mm/yyyy first
   const parts = dateStr.trim().split('/')
   if (parts.length === 3) {
@@ -409,7 +479,7 @@ function parseDatabaseDate(dateStr: string): Date {
       }
     }
   }
-  
+
   // Fallback to native parsing (e.g. YYYY-MM-DD)
   const d = new Date(dateStr)
   if (!isNaN(d.getTime())) {
@@ -424,8 +494,18 @@ function formatDisplayOnlyDate(dateStr: string): string {
   if (isNaN(date.getTime())) return dateStr
   const day = date.getDate()
   const monthNames = [
-    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    'Januari',
+    'Februari',
+    'Maret',
+    'April',
+    'Mei',
+    'Juni',
+    'Juli',
+    'Agustus',
+    'September',
+    'Oktober',
+    'November',
+    'Desember',
   ]
   const monthName = monthNames[date.getMonth()]
   const year = date.getFullYear()
@@ -440,7 +520,7 @@ function formatCardDate(dateStr: string): string {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
-    year: 'numeric'
+    year: 'numeric',
   })
 }
 
@@ -514,18 +594,34 @@ function parseAnyDateInput(input: string): string {
 
 function getMonthIndexFromName(name: string): number {
   const months: Record<string, number> = {
-    januari: 1, jan: 1,
-    februari: 2, feb: 2,
-    maret: 3, mar: 3,
-    april: 4, apr: 4,
-    mei: 5, may: 5,
-    juni: 6, jun: 6,
-    juli: 7, jul: 7,
-    agustus: 8, agt: 8, agu: 8, aug: 8,
-    september: 9, sep: 9,
-    oktober: 10, okt: 10, oct: 10,
-    november: 11, nov: 11,
-    desember: 12, des: 12, dec: 12
+    januari: 1,
+    jan: 1,
+    februari: 2,
+    feb: 2,
+    maret: 3,
+    mar: 3,
+    april: 4,
+    apr: 4,
+    mei: 5,
+    may: 5,
+    juni: 6,
+    jun: 6,
+    juli: 7,
+    jul: 7,
+    agustus: 8,
+    agt: 8,
+    agu: 8,
+    aug: 8,
+    september: 9,
+    sep: 9,
+    oktober: 10,
+    okt: 10,
+    oct: 10,
+    november: 11,
+    nov: 11,
+    desember: 12,
+    des: 12,
+    dec: 12,
   }
   return months[name] || -1
 }
@@ -542,11 +638,21 @@ function onDatePickerChange(event: Event) {
         const year = parseInt(p0, 10)
         const month = parseInt(p1, 10) - 1
         const day = parseInt(p2, 10)
-        
+
         if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
           const monthNames = [
-            'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+            'Januari',
+            'Februari',
+            'Maret',
+            'April',
+            'Mei',
+            'Juni',
+            'Juli',
+            'Agustus',
+            'September',
+            'Oktober',
+            'November',
+            'Desember',
           ]
           todoDueDate.value = `${day} ${monthNames[month]} ${year}`
         }
@@ -567,11 +673,21 @@ function onCompletedDatePickerChange(event: Event) {
         const year = parseInt(p0, 10)
         const month = parseInt(p1, 10) - 1
         const day = parseInt(p2, 10)
-        
+
         if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
           const monthNames = [
-            'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+            'Januari',
+            'Februari',
+            'Maret',
+            'April',
+            'Mei',
+            'Juni',
+            'Juli',
+            'Agustus',
+            'September',
+            'Oktober',
+            'November',
+            'Desember',
           ]
           todoCompletedDate.value = `${day} ${monthNames[month]} ${year}`
         }
@@ -610,7 +726,9 @@ function getUpcomingTasks() {
 
   // Sort by due date (earliest first)
   upcoming.sort(
-    (a, b) => parseDatabaseDate(a.todo.dueDate || '').getTime() - parseDatabaseDate(b.todo.dueDate || '').getTime(),
+    (a, b) =>
+      parseDatabaseDate(a.todo.dueDate || '').getTime() -
+      parseDatabaseDate(b.todo.dueDate || '').getTime(),
   )
   return upcoming
 }
@@ -629,7 +747,9 @@ function getPinnedTasks() {
 
   // Sort by due date (earliest first)
   pinned.sort(
-    (a, b) => parseDatabaseDate(a.todo.dueDate || '').getTime() - parseDatabaseDate(b.todo.dueDate || '').getTime(),
+    (a, b) =>
+      parseDatabaseDate(a.todo.dueDate || '').getTime() -
+      parseDatabaseDate(b.todo.dueDate || '').getTime(),
   )
   return pinned
 }
@@ -653,8 +773,101 @@ function isApproachingDeadline(dueDate: string): boolean {
   return daysLeft >= 0 && daysLeft <= 7
 }
 
-function hasCompletedTasks(course: Course): boolean {
-  return course.todos.some((todo) => todo.done)
+function toggleSelectAllBackup() {
+  if (isAllCoursesSelectedForBackup.value) {
+    selectedCourseIdsForBackup.value = []
+  } else {
+    selectedCourseIdsForBackup.value = courses.value.map((c) => c.id)
+  }
+}
+
+function selectOnlyCompletedBackup() {
+  const completed = getCompletedCourses(courses.value)
+  selectedCourseIdsForBackup.value = completed.map((c) => c.id)
+}
+
+function openBackupModal() {
+  if (courses.value.length === 0) {
+    showCustomAlert('Belum ada data mata kuliah untuk di-backup.', 'warning', 'Peringatan')
+    return
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  backupFileName.value = `backup-matkul-${today}`
+  selectedCourseIdsForBackup.value = courses.value.map((c) => c.id)
+  isBackupModalOpen.value = true
+}
+
+function handleDownloadBackup() {
+  if (selectedCourseIdsForBackup.value.length === 0) {
+    showCustomAlert('Pilih minimal 1 mata kuliah untuk di-backup.', 'warning', 'Peringatan')
+    return
+  }
+  const toExport = selectedCoursesForBackup.value
+  const savedName = exportCoursesToJson(toExport, backupFileName.value)
+  isBackupModalOpen.value = false
+  showCustomAlert(
+    `Berhasil mem-backup ${toExport.length} mata kuliah ke file "${savedName}".`,
+    'success',
+    'Backup Berhasil',
+  )
+}
+
+function triggerImport() {
+  if (importFileInput.value) {
+    importFileInput.value.value = ''
+    importFileInput.value.click()
+  }
+}
+
+function onFileSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+
+  pendingImportFileName.value = file.name
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const content = e.target?.result as string
+      const validCourses = parseAndValidateBackupFile(content)
+      pendingImportCourses.value = validCourses
+      importReplaceMode.value = 'merge'
+      isImportModalOpen.value = true
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showCustomAlert(msg, 'error', 'Import Gagal')
+    }
+  }
+  reader.onerror = () => {
+    showCustomAlert('Gagal membaca file dari perangkat.', 'error', 'Error')
+  }
+  reader.readAsText(file)
+}
+
+async function handleConfirmImport() {
+  if (pendingImportCourses.value.length === 0) return
+  isImporting.value = true
+  try {
+    const replaceAll = importReplaceMode.value === 'replace'
+    const updated = await importCoursesToDatabase(
+      pendingImportCourses.value,
+      courses.value,
+      replaceAll,
+    )
+    courses.value = updated
+    isImportModalOpen.value = false
+    showCustomAlert(
+      `Berhasil mengimpor ${pendingImportCourses.value.length} mata kuliah (${replaceAll ? 'mode ganti seluruh data' : 'mode gabungkan'}).`,
+      'success',
+      'Import Berhasil',
+    )
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    showCustomAlert('Gagal mengimpor data: ' + msg, 'error', 'Error')
+  } finally {
+    isImporting.value = false
+  }
 }
 
 onMounted(() => {
@@ -668,6 +881,8 @@ onMounted(() => {
       isModalOpen.value = false
       isTodoModalOpen.value = false
       isDeleteModalOpen.value = false
+      isBackupModalOpen.value = false
+      isImportModalOpen.value = false
       isNotificationOpen.value = false
       isPinnedOpen.value = false
       isMenuOpen.value = false
@@ -727,43 +942,115 @@ onMounted(() => {
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <!-- Three vertical dots icon -->
-              <path d="M12 5h.01M12 12h.01M12 19h.01" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              <path
+                d="M12 5h.01M12 12h.01M12 19h.01"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+              />
             </svg>
             <span v-if="getPinnedTasks().length > 0" class="menu-alert-dot"></span>
           </button>
-          
+
           <div v-if="isMenuOpen" class="menu-dropdown-list">
             <!-- Bookmark Item -->
-            <button class="menu-item" @click="isPinnedOpen = !isPinnedOpen; isMenuOpen = false">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1">
+            <button
+              class="menu-item"
+              @click="((isPinnedOpen = !isPinnedOpen), (isMenuOpen = false))"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                stroke="currentColor"
+                stroke-width="1"
+              >
                 <!-- Bookmark icon -->
                 <path d="M5 2c-1.1 0-2 .9-2 2v18l9-5 9 5V4c0-1.1-.9-2-2-2H5z" />
               </svg>
               <span>Bookmark Task</span>
-              <span v-if="getPinnedTasks().length > 0" class="menu-badge">{{ getPinnedTasks().length }}</span>
+              <span v-if="getPinnedTasks().length > 0" class="menu-badge">{{
+                getPinnedTasks().length
+              }}</span>
             </button>
 
             <!-- Dark Mode Toggle Item -->
-            <button class="menu-item" @click="toggleTheme(); isMenuOpen = false">
+            <button class="menu-item" @click="(toggleTheme(), (isMenuOpen = false))">
               <svg v-if="isDarkTheme" width="18" height="18" viewBox="0 0 24 24" fill="none">
                 <!-- Sun icon -->
                 <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2" />
-                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <path
+                  d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
               </svg>
               <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none">
                 <!-- Moon icon -->
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path
+                  d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
               <span>{{ isDarkTheme ? 'Mode Terang' : 'Mode Gelap' }}</span>
             </button>
 
             <!-- Refresh Data Item -->
-            <button class="menu-item" @click="fetchCourses(); isMenuOpen = false">
+            <button class="menu-item" @click="(fetchCourses(), (isMenuOpen = false))">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                 <!-- Refresh icon -->
-                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path
+                  d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
               <span>Refresh Data</span>
+            </button>
+
+            <!-- Backup Data Item -->
+            <button class="menu-item" @click="(openBackupModal(), (isMenuOpen = false))">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>Backup Data JSON</span>
+            </button>
+
+            <!-- Import Data Item -->
+            <button class="menu-item" @click="(triggerImport(), (isMenuOpen = false))">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span>Import Data JSON</span>
             </button>
           </div>
         </div>
@@ -796,8 +1083,55 @@ onMounted(() => {
 
       <section class="panel list-panel">
         <div class="list-header">
-          <h3>Daftar Mata Kuliah</h3>
-          <div class="muted">{{ courses.length }} mata kuliah</div>
+          <div class="list-header-title">
+            <h3>Daftar Mata Kuliah</h3>
+            <div class="muted">{{ courses.length }} mata kuliah</div>
+          </div>
+          <div class="list-header-actions">
+            <button
+              class="btn-header-action"
+              title="Pilih dan backup data mata kuliah ke file JSON"
+              @click="openBackupModal"
+              :disabled="courses.length === 0"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>Backup JSON</span>
+            </button>
+            <button
+              class="btn-header-action secondary"
+              title="Import data mata kuliah dari file JSON"
+              @click="triggerImport"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span>Import JSON</span>
+            </button>
+          </div>
         </div>
 
         <div v-if="loading" class="empty">Memuat...</div>
@@ -886,7 +1220,11 @@ onMounted(() => {
 
             <ul v-if="isExpanded(course.id)" class="todo-list">
               <li v-for="todo in course.todos" :key="todo.id" :class="{ done: todo.done }">
-                <div class="todo-item" @click="openEditTodoModal(course, todo)" style="cursor: pointer">
+                <div
+                  class="todo-item"
+                  @click="openEditTodoModal(course, todo)"
+                  style="cursor: pointer"
+                >
                   <input
                     type="checkbox"
                     v-model="todo.done"
@@ -930,7 +1268,6 @@ onMounted(() => {
                     class="icon-small icon-delete"
                     title="Hapus task"
                     @click="deleteTodo(course, todo.id)"
-                    :disabled="!!todo.nilai"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24">
                       <path
@@ -992,7 +1329,16 @@ onMounted(() => {
               @keyup.enter="saveTodo"
             />
             <div class="date-picker-trigger" title="Pilih Tanggal">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
                 <line x1="16" y1="2" x2="16" y2="6"></line>
                 <line x1="8" y1="2" x2="8" y2="6"></line>
@@ -1018,7 +1364,16 @@ onMounted(() => {
               @keyup.enter="saveTodo"
             />
             <div class="date-picker-trigger" title="Pilih Tanggal Selesai">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
                 <line x1="16" y1="2" x2="16" y2="6"></line>
                 <line x1="8" y1="2" x2="8" y2="6"></line>
@@ -1032,7 +1387,9 @@ onMounted(() => {
               />
             </div>
           </div>
-          <small class="muted" style="display: block; margin-top: 0.25rem;">*Mengisi tanggal selesai akan menandai task sebagai selesai.</small>
+          <small class="muted" style="display: block; margin-top: 0.25rem"
+            >*Mengisi tanggal selesai akan menandai task sebagai selesai.</small
+          >
         </div>
         <div class="field">
           <label>Nilai (0-100)</label>
@@ -1062,16 +1419,262 @@ onMounted(() => {
           </svg>
         </div>
         <h3 style="text-align: center; margin-bottom: 0.5rem">Konfirmasi Hapus</h3>
-        <p style="text-align: center; color: var(--muted); margin-bottom: 1.5rem">
-          {{
-            deleteTarget?.type === 'course'
-              ? 'Apakah Anda yakin ingin menghapus mata kuliah ini?'
-              : 'Apakah Anda yakin ingin menghapus task ini?'
-          }}
+        <p
+          style="
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 1.5rem;
+            line-height: 1.5;
+            font-size: 0.95rem;
+          "
+        >
+          {{ deleteConfirmMessage }}
         </p>
         <div class="actions" style="justify-content: center; gap: 1rem">
-          <button class="btn btn-secondary" @click="closeDeleteModal">Batal</button>
-          <button class="btn btn-danger" @click="confirmDelete">Hapus</button>
+          <button class="btn btn-secondary" @click="closeDeleteModal">Tidak</button>
+          <button class="btn btn-danger" @click="confirmDelete">Ya</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden File Input for Import -->
+    <input
+      ref="importFileInput"
+      type="file"
+      accept=".json,application/json"
+      style="display: none"
+      @change="onFileSelected"
+    />
+
+    <!-- Backup Modal -->
+    <div v-if="isBackupModalOpen" class="modal-overlay" @click.self="isBackupModalOpen = false">
+      <div class="modal modal-backup">
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--primary)"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          <h3 style="margin: 0">Backup Data Mata Kuliah (.json)</h3>
+        </div>
+        <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem">
+          Pilih mata kuliah yang ingin di-backup. Anda dapat memilih salah satu, beberapa, atau
+          semua dengan mencentang kotak di bawah.
+        </p>
+
+        <!-- Selection Control Bar -->
+        <div class="backup-selection-bar">
+          <label class="backup-select-all-label">
+            <input
+              type="checkbox"
+              :checked="isAllCoursesSelectedForBackup"
+              @change="toggleSelectAllBackup"
+            />
+            <span
+              >Pilih Semua ({{ selectedCourseIdsForBackup.length }}/{{
+                courses.length
+              }}
+              dipilih)</span
+            >
+          </label>
+          <div class="backup-quick-filters">
+            <button type="button" class="backup-quick-btn" @click="toggleSelectAllBackup">
+              {{ isAllCoursesSelectedForBackup ? 'Batal Semua' : 'Pilih Semua' }}
+            </button>
+            <button
+              type="button"
+              class="backup-quick-btn"
+              @click="selectOnlyCompletedBackup"
+              :disabled="completedCoursesCount === 0"
+            >
+              Hanya 100% ({{ completedCoursesCount }})
+            </button>
+          </div>
+        </div>
+
+        <div class="backup-course-list">
+          <div class="backup-list-items">
+            <label
+              v-for="course in courses"
+              :key="course.id"
+              class="backup-item backup-selectable-item"
+              :class="{ 'item-selected': selectedCourseIdsForBackup.includes(course.id) }"
+            >
+              <input
+                type="checkbox"
+                :value="course.id"
+                v-model="selectedCourseIdsForBackup"
+                class="backup-checkbox"
+              />
+              <div class="backup-item-content">
+                <span class="backup-course-name">{{ course.name }}</span>
+                <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap">
+                  <span
+                    class="badge"
+                    :class="course.type === 'Praktik' ? 'primary' : 'accent'"
+                    style="font-size: 0.7rem; padding: 0.15rem 0.5rem"
+                  >
+                    {{ course.type }}
+                  </span>
+                  <span
+                    class="backup-progress-badge"
+                    :class="{
+                      'progress-100': getCourseProgress(course).percent === 100,
+                      'progress-partial':
+                        getCourseProgress(course).percent > 0 &&
+                        getCourseProgress(course).percent < 100,
+                      'progress-zero': getCourseProgress(course).percent === 0,
+                    }"
+                  >
+                    {{ getCourseProgress(course).completed }}/{{
+                      getCourseProgress(course).total
+                    }}
+                    selesai ({{ getCourseProgress(course).percent }}%)
+                  </span>
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-top: 1rem">
+          <label>Nama File Hasil Backup (.json)</label>
+          <input
+            v-model="backupFileName"
+            placeholder="Contoh: backup-matkul-pilihan"
+            @keyup.enter="handleDownloadBackup"
+          />
+        </div>
+
+        <div class="actions" style="justify-content: flex-end; margin-top: 1rem; gap: 0.5rem">
+          <button class="btn btn-secondary" @click="isBackupModalOpen = false">Batal</button>
+          <button
+            class="btn btn-success"
+            @click="handleDownloadBackup"
+            :disabled="selectedCourseIdsForBackup.length === 0"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              style="display: inline-block; vertical-align: middle; margin-right: 0.25rem"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download Backup ({{ selectedCourseIdsForBackup.length }}) (.json)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import Confirmation Modal -->
+    <div v-if="isImportModalOpen" class="modal-overlay" @click.self="isImportModalOpen = false">
+      <div class="modal">
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#3b82f6"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <h3 style="margin: 0; color: #3b82f6">Import Data Mata Kuliah</h3>
+        </div>
+        <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 1rem">
+          File: <strong>{{ pendingImportFileName }}</strong> ({{ pendingImportCourses.length }} mata
+          kuliah ditemukan).
+        </p>
+
+        <div class="field">
+          <label>Opsi Import Data:</label>
+          <div class="import-options">
+            <label class="import-option-label" :class="{ selected: importReplaceMode === 'merge' }">
+              <input type="radio" value="merge" v-model="importReplaceMode" />
+              <div>
+                <strong>Gabungkan & Update (Merge)</strong>
+                <p>
+                  Menambahkan mata kuliah baru atau memperbarui data yang sudah ada tanpa menghapus
+                  data lain.
+                </p>
+              </div>
+            </label>
+            <label
+              class="import-option-label"
+              :class="{ selected: importReplaceMode === 'replace' }"
+            >
+              <input type="radio" value="replace" v-model="importReplaceMode" />
+              <div>
+                <strong>Ganti Seluruh Data (Replace)</strong>
+                <p>
+                  Menghapus seluruh mata kuliah saat ini dan menggantinya dengan data dari file
+                  backup.
+                </p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="backup-course-list">
+          <div class="backup-list-header">
+            <span>Mata Kuliah yang akan Diimpor:</span>
+          </div>
+          <div class="backup-list-items">
+            <div v-for="course in pendingImportCourses" :key="course.id" class="backup-item">
+              <span class="backup-course-name">{{ course.name }}</span>
+              <div style="display: flex; align-items: center; gap: 0.5rem">
+                <span
+                  class="badge"
+                  :class="course.type === 'Praktik' ? 'primary' : 'accent'"
+                  style="font-size: 0.7rem; padding: 0.15rem 0.5rem"
+                >
+                  {{ course.type }}
+                </span>
+                <span class="backup-course-done"
+                  >{{ course.todos.filter((t) => t.done).length }}/{{
+                    course.todos.length
+                  }}
+                  selesai</span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions" style="justify-content: flex-end; margin-top: 1rem; gap: 0.5rem">
+          <button
+            class="btn btn-secondary"
+            @click="isImportModalOpen = false"
+            :disabled="isImporting"
+          >
+            Batal
+          </button>
+          <button class="btn btn-info" @click="handleConfirmImport" :disabled="isImporting">
+            <span v-if="isImporting">Mengimpor...</span>
+            <span v-else>Konfirmasi Import</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1298,10 +1901,13 @@ body {
     padding: 1rem;
     z-index: 60;
     backdrop-filter: blur(4px);
+    overflow-y: auto;
   }
   .modal {
     width: 100%;
     max-width: 520px;
+    max-height: 90vh;
+    overflow-y: auto;
     background: var(--card);
     border: 1px solid var(--border);
     padding: 1.5rem;
@@ -1516,6 +2122,239 @@ body {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+.list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.list-header-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+.list-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-header-action {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 8px;
+  background: var(--input-bg);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #10b981;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.btn-header-action:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: #10b981;
+}
+.btn-header-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
+  color: var(--muted);
+}
+.btn-header-action.secondary {
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #3b82f6;
+}
+.btn-header-action.secondary:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3b82f6;
+}
+/* Backup and Import Modal Styles */
+.modal-backup {
+  max-width: 560px;
+  width: 95%;
+}
+.backup-selection-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.backup-select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.backup-select-all-label input[type='checkbox'] {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+.backup-quick-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.backup-quick-btn {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.backup-quick-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.backup-quick-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.backup-course-list {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0.5rem;
+}
+.backup-list-items {
+  overflow-y: auto;
+  padding: 0.35rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.backup-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.backup-item:last-child {
+  border-bottom: none;
+}
+.backup-selectable-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  transition: all 120ms ease;
+}
+.backup-selectable-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.backup-selectable-item.item-selected {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+.backup-checkbox {
+  cursor: pointer;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.backup-item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 0;
+}
+.backup-progress-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+.backup-progress-badge.progress-100 {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+.backup-progress-badge.progress-partial {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+}
+.backup-progress-badge.progress-zero {
+  background: rgba(156, 163, 175, 0.15);
+  color: var(--muted);
+}
+.backup-course-name {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.backup-course-done {
+  font-size: 0.75rem;
+  color: var(--primary);
+  font-weight: 600;
+}
+.import-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.import-option-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.import-option-label input[type='radio'] {
+  width: auto;
+  margin-top: 0.2rem;
+  cursor: pointer;
+}
+.import-option-label:hover {
+  background: var(--hover-bg);
+  border-color: #3b82f6;
+}
+.import-option-label.selected {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+}
+.import-option-label strong {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-bottom: 0.15rem;
+}
+.import-option-label p {
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.3;
 }
 .field {
   margin-bottom: 0.75rem;
@@ -2335,36 +3174,42 @@ select {
   }
 
   /* Increase padding for touch targets */
-  .btn, .icon, .theme-toggle {
+  .btn,
+  .icon,
+  .theme-toggle {
     min-height: 44px; /* Apple Human Interface Guidelines minimum touch target */
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  
+
   .btn.primary {
     padding: 0.85rem 1.25rem;
   }
 
   /* Adjust modals and overlays to center correctly on mobile */
-  .pinned-overlay, .notification-overlay, .modal-container {
+  .pinned-overlay,
+  .notification-overlay,
+  .modal-container {
     align-items: center;
     justify-content: center;
     padding: 1rem;
   }
 
-  .pinned-panel, .notification-panel, .modal-content {
+  .pinned-panel,
+  .notification-panel,
+  .modal-content {
     width: 100%;
     max-width: none;
     margin: 0;
     max-height: 85vh;
   }
-  
+
   /* Slightly larger fonts for readability on mobile */
   h1 {
     font-size: 1.75rem;
   }
-  
+
   h3 {
     font-size: 1.3rem;
   }
